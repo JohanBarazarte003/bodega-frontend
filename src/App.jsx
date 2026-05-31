@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-
 import axios from 'axios';
-import { UserPlus, PlusCircle, ShoppingCart, User, Share2, RefreshCw, DollarSign, Edit3, Check, X, Users, Trash2 } from 'lucide-react';
+import { UserPlus, PlusCircle, ShoppingCart, User, Share2, RefreshCw, DollarSign, Edit3, Check, X, Users, Trash2, Package } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000/api';
 const api = {
@@ -13,6 +12,7 @@ const api = {
     actualizarPrecio: (id, precio) => axios.put(`${API}/productos/${id}`, { precio_usd: precio }).then(res => res.data),
     eliminarProducto: (id) => axios.delete(`${API}/productos/${id}`).then(res => res.data),
     registrarConsumo: (o) => axios.post(`${API}/fiar`, o).then(res => res.data),
+    getConsumosCliente: (clienteId) => axios.get(`${API}/consumos/${clienteId}`).then(res => res.data),
     registrarPago: (pago) => axios.post(`${API}/pagos`, pago).then(res => res.data),
     getTasa: () => axios.get(`${API}/tasa`).then(res => res.data),
 };
@@ -22,6 +22,7 @@ function App() {
   const [productos, setProductos] = useState([]);
   const [tasa, setTasa] = useState({ tasa: 45.65, fuente: 'Cargando...' });
   const [clienteSeleccionado, setClienteSeleccionado] = useState(null);
+  const [consumosCliente, setConsumosCliente] = useState([]); 
 
   const [formCliente, setFormCliente] = useState({ nombre: '', telefono: '' });
   const [formProducto, setFormProducto] = useState({ nombre: '', categoria: 'Snacks', precio_usd: '' });
@@ -59,6 +60,17 @@ function App() {
     cargarDatos();
   }, []);
 
+  const seleccionarYVerCliente = async (cliente) => {
+    setClienteSeleccionado(cliente);
+    setConsumosCliente([]); 
+    try {
+      const consumos = await api.getConsumosCliente(cliente.id);
+      setConsumosCliente(consumos);
+    } catch (err) {
+      console.error("Error al obtener los artículos que debe el cliente", err);
+    }
+  };
+
   const handleCrearCliente = async (e) => {
     e.preventDefault();
     if (!formCliente.nombre.trim()) return;
@@ -75,6 +87,7 @@ function App() {
     try {
       await api.eliminarCliente(id);
       setClienteSeleccionado(null);
+      setConsumosCliente([]);
       cargarDatos();
       alert("Cliente removido con éxito.");
     } catch (err) { alert("No se pudo eliminar el cliente."); }
@@ -119,9 +132,14 @@ function App() {
         cantidad: formFiar.cantidad
       });
       setFormFiar({ producto_id: '', cantidad: 1 });
+      
       const dataClientes = await api.getClientes();
       setClientes(dataClientes);
-      setClienteSeleccionado(dataClientes.find(c => c.id === clienteSeleccionado.id));
+      
+      const clienteActualizado = dataClientes.find(c => c.id === clienteSeleccionado.id);
+      if (clienteActualizado) {
+        seleccionarYVerCliente(clienteActualizado);
+      }
     } catch (err) { alert("Error al procesar el fiado"); }
   };
 
@@ -143,18 +161,70 @@ function App() {
       const clienteActualizado = dataClientes.find(c => c.id === clienteSeleccionado.id);
       if (!clienteActualizado || parseFloat(clienteActualizado.deuda_usd) === 0) {
         setClienteSeleccionado(null);
+        setConsumosCliente([]);
         alert("¡Deuda saldada por completo!");
       } else {
-        setClienteSeleccionado(clienteActualizado);
+        seleccionarYVerCliente(clienteActualizado);
         alert("¡Abono cargado con éxito!");
       }
     } catch (err) { alert("Error al procesar el abono"); }
   };
 
+  // NUEVA FUNCIÓN AUTOMATIZADA CON DETALLE PRODUCTO POR PRODUCTO
   const enviarWhatsApp = (c) => {
-    const deudaBs = (parseFloat(c.deuda_usd || 0) * tasa.tasa).toFixed(2);
-    const mensaje = `Hola ${c.nombre}, te saludo de la Bodega. Te escribo para recordarte tu saldo pendiente: $${parseFloat(c.deuda_usd || 0).toFixed(2)} (${deudaBs} Bs.). ¡Feliz día!`;
-    window.open(`https://api.whatsapp.com/send?phone=${c.telefono}&text=${encodeURIComponent(mensaje)}`, '_blank');
+    if (!c.telefono) {
+      alert("Este cliente no tiene un número de teléfono registrado.");
+      return;
+    }
+
+    // Encabezado del mensaje
+    let mensaje = `*🛍️ DETALLE DE TU CUENTA PENDIENTE*\n\n`;
+    mensaje += `Hola *${c.nombre}*, espero que estés bien. Aquí tienes el resumen detallado de los productos que se fiaron en la cuenta:\n\n`;
+
+    let totalCalculadoUSD = 0;
+
+    // Recorremos los consumos cargados en el estado para armar la lista
+    if (consumosCliente && consumosCliente.length > 0) {
+      consumosCliente.forEach((item) => {
+        const cant = parseInt(item.cantidad) || 1;
+        const precioUSD = parseFloat(item.precio_unitario_usd) || 0;
+        const subtotalUSD = precioUSD * cant;
+        totalCalculadoUSD += subtotalUSD;
+
+        // Conversión a Bolívares usando la tasa del estado
+        const precioBS = precioUSD * tasa.tasa;
+        const subtotalBS = subtotalUSD * tasa.tasa;
+
+        mensaje += `• *${item.producto}*\n`;
+        mensaje += `  Cantidad: ${cant} x $${precioUSD.toFixed(2)} (_Ref: ${precioBS.toFixed(2)} Bs._)\n`;
+        mensaje += `  *Subtotal: ${subtotalBS.toFixed(2)} Bs.*\n\n`;
+      });
+    } else {
+      // Respaldo en caso de que los consumos no hayan terminado de cargar en el estado
+      const deudaGeneralUSD = parseFloat(c.deuda_usd || 0);
+      const deudaGeneralBS = deudaGeneralUSD * tasa.tasa;
+      mensaje += `• *Saldo Pendiente Acumulado*\n`;
+      mensaje += `  *Subtotal: ${deudaGeneralBS.toFixed(2)} Bs.*\n\n`;
+      totalCalculadoUSD = deudaGeneralUSD;
+    }
+
+    // Calculamos el gran total en Bolívares
+    const totalGeneralBS = totalCalculadoUSD * tasa.tasa;
+
+    // Bloque de cierre y totales financieros
+    mensaje += `──────────────────────\n`;
+    mensaje += `💵 *TOTAL ACUMULADO A PAGAR:*\n`;
+    mensaje += `• *Total en Dólares:* $${totalCalculadoUSD.toFixed(2)}\n`;
+    mensaje += `• *Total en Bolívares:* ${totalGeneralBS.toFixed(2)} Bs.\n`;
+    mensaje += `──────────────────────\n\n`;
+    mensaje += `*Tasa de cambio aplicada:* ${tasa.tasa.toFixed(2)} Bs./$ *(BCV)*\n\n`;
+    mensaje += `📌 _Si realizas el pago por Pago Móvil o Transferencia, por favor recuerda validar la tasa del día actual. ¡Muchas gracias!_ 😊`;
+
+    // Limpieza básica del número de teléfono
+    const numeroLimpio = c.telefono.replace(/[^0-9]/g, '');
+    
+    // Lanzamiento a la API web de WhatsApp
+    window.open(`https://api.whatsapp.com/send?phone=${numeroLimpio}&text=${encodeURIComponent(mensaje)}`, '_blank');
   };
 
   const deudoresActivos = clientes.filter(c => parseFloat(c.deuda_usd) > 0);
@@ -194,7 +264,7 @@ function App() {
             </form>
           </section>
 
-          {/* INVENTARIO CON MODIFICADOR Y ELIMINACIÓN */}
+          {/* INVENTARIO */}
           <section className="bg-slate-800 p-5 rounded-2xl border border-slate-700/70 shadow-lg flex flex-col h-[320px]">
             <h2 className="text-lg font-bold text-cyan-400 flex items-center gap-2 mb-2"><PlusCircle className="w-5 h-5" /> Inventario de Ventas</h2>
             
@@ -246,7 +316,7 @@ function App() {
                 const totalBs = (parseFloat(c.deuda_usd || 0) * tasa.tasa).toFixed(2);
                 const esSeleccionado = clienteSeleccionado?.id === c.id;
                 return (
-                  <div key={c.id} onClick={() => setClienteSeleccionado(c)} className={`p-4 rounded-xl border cursor-pointer transition-all flex justify-between items-center ${esSeleccionado ? 'bg-purple-600/20 border-purple-500' : 'bg-slate-900/50 border-slate-700/60 hover:bg-slate-900'}`}>
+                  <div key={c.id} onClick={() => seleccionarYVerCliente(c)} className={`p-4 rounded-xl border cursor-pointer transition-all flex justify-between items-center ${esSeleccionado ? 'bg-purple-600/20 border-purple-500' : 'bg-slate-900/50 border-slate-700/60 hover:bg-slate-900'}`}>
                     <div>
                       <h3 className="font-bold text-sm text-slate-200">{c.nombre}</h3>
                       {c.telefono && <p className="text-xs text-slate-500">{c.telefono}</p>}
@@ -262,14 +332,14 @@ function App() {
           </div>
         </div>
 
-        {/* COLUMNA 3: CAJA DE FACTURACIÓN Y ELIMINACIÓN DE CLIENTE */}
+        {/* COLUMNA 3: CAJA DE FACTURACIÓN Y ARTÍCULOS DEBIÉNDOSE */}
         <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700/70 shadow-lg flex flex-col h-[560px]">
           
           <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700/60 mb-3 flex flex-col gap-1.5">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1"><Users className="w-3 h-3 text-purple-400" /> Abrir Cuenta de Cliente:</span>
             <select onChange={e => {
               const encontrado = clientes.find(c => c.id === parseInt(e.target.value));
-              if (encontrado) setClienteSeleccionado(encontrado);
+              if (encontrado) seleccionarYVerCliente(encontrado);
             }} value={clienteSeleccionado?.id || ""} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-purple-500">
               <option value="">-- Seleccionar de la Base de Datos --</option>
               {clientes.map(c => (
@@ -279,9 +349,9 @@ function App() {
           </div>
 
           {clienteSeleccionado ? (
-            <div className="flex flex-col h-full justify-between gap-3 overflow-hidden">
-              <div>
-                <div className="border-b border-slate-700 pb-2 mb-3 flex justify-between items-center">
+            <div className="flex flex-col h-full justify-between gap-2 overflow-hidden">
+              <div className="overflow-y-auto flex-1 pr-1 space-y-3">
+                <div className="border-b border-slate-700 pb-2 flex justify-between items-center">
                   <div className="truncate max-w-[130px]">
                     <span className="text-[10px] text-purple-400 uppercase font-bold tracking-wider block">Expediente Seleccionado</span>
                     <h2 className="text-base font-black text-slate-100 truncate">{clienteSeleccionado.nombre}</h2>
@@ -292,15 +362,42 @@ function App() {
                         <Share2 className="w-3 h-3" /> Cobrar
                       </button>
                     )}
-                    {/* BOTÓN PARA ELIMINAR EL CLIENTE DESDE SU EXPEDIENTE */}
                     <button onClick={() => handleEliminarCliente(clienteSeleccionado.id, clienteSeleccionado.nombre)} className="p-1.5 bg-rose-950/40 text-rose-400 rounded-lg border border-rose-900/40 hover:bg-rose-600 hover:text-white transition-all" title="Eliminar Cliente del Sistema">
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
 
+                {/* 📦 SECCIÓN VISUAL ACTUALIZADA: ARTÍCULOS DETALLADOS QUE DEBE ESTE CLIENTE */}
+                <div className="bg-slate-900/90 border border-slate-700/60 p-3 rounded-xl">
+                  <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider flex items-center gap-1 mb-2">
+                    <Package className="w-3 h-3" /> Productos fiados en esta cuenta:
+                  </span>
+                  <div className="max-h-[100px] overflow-y-auto space-y-1.5 pr-1">
+                    {consumosCliente.length === 0 ? (
+                      <p className="text-[11px] text-slate-500 italic text-center py-2">No hay registro detallado de mercancía fiada.</p>
+                    ) : (
+                      consumosCliente.map((item, idx) => {
+                        const precioBS = (parseFloat(item.precio_unitario_usd || 0) * tasa.tasa);
+                        return (
+                          <div key={idx} className="flex justify-between items-center bg-slate-800/60 p-2 rounded-lg border border-slate-700/30 text-[11px]">
+                            <div className="truncate max-w-[140px] text-slate-300">
+                              <span className="font-extrabold text-cyan-400 mr-1">{item.cantidad}x</span>
+                              {item.producto}
+                            </div>
+                            <div className="text-right font-mono text-[10px]">
+                              <span className="text-rose-400 font-bold block">${parseFloat(item.subtotal_usd || 0).toFixed(2)}</span>
+                              <span className="text-slate-400">{(parseFloat(item.subtotal_usd || 0) * tasa.tasa).toFixed(2)} Bs.</span>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
                 {/* FIAR UN PRODUCTO */}
-                <form onSubmit={handleRegistrarConsumo} className="bg-slate-900/60 p-3 rounded-xl border border-slate-700/50 space-y-2 mb-3">
+                <form onSubmit={handleRegistrarConsumo} className="bg-slate-900/60 p-3 rounded-xl border border-slate-700/50 space-y-2">
                   <span className="text-xs font-bold text-slate-400 block"><ShoppingCart className="w-3.5 h-3.5 inline mr-1 text-cyan-400" /> Fiar Artículo</span>
                   <select value={formFiar.producto_id} onChange={e => setFormFiar({...formFiar, producto_id: e.target.value})} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500">
                     <option value="">-- Buscar item --</option>
@@ -336,27 +433,17 @@ function App() {
                     <p className="text-[10px] text-slate-400 italic text-right">
                       {monedaAbono === 'USD' 
                         ? `Conversión: ${(parseFloat(montoAbono) * tasa.tasa).toFixed(2)} Bs.`
-                        : `Conversión: $ ${(parseFloat(montoAbono) / tasa.tasa).toFixed(2)} USD`
-                      }
+                        : `Conversión: $ ${(parseFloat(montoAbono) / tasa.tasa).toFixed(2)} USD`}
                     </p>
                   )}
                 </form>
               </div>
-
-              {/* CUADRO DE DEUDA RESTANTE */}
-              <div className="bg-slate-900 p-3.5 rounded-xl border border-slate-700 flex justify-between items-center mt-auto">
-                <span className="text-xs font-bold text-slate-400">Saldo Pendiente:</span>
-                <div className="text-right">
-                  <span className="text-xl font-black text-rose-400 block">${parseFloat(clienteSeleccionado.deuda_usd || 0).toFixed(2)}</span>
-                  <span className="text-xs text-slate-400">{(parseFloat(clienteSeleccionado.deuda_usd || 0) * tasa.tasa).toFixed(2)} Bs.</span>
-                </div>
-              </div>
-
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center h-full text-slate-500 space-y-2 mt-4">
-              <ShoppingCart className="w-10 h-10 stroke-[1.2] text-slate-600" />
-              <p className="text-xs text-center max-w-[180px]">Selecciona una cuenta activa de la lista o ábrela desde el buscador superior.</p>
+            <div className="flex-1 flex flex-col items-center justify-center text-center text-slate-500 px-4">
+              <ShoppingCart className="w-8 h-8 text-slate-600 mb-2 stroke-[1.5]" />
+              <p className="text-xs font-bold">Caja en Espera</p>
+              <p className="text-[11px] mt-1 text-slate-500/80">Selecciona un deudor activo o abre un expediente desde la lista desplegable de arriba.</p>
             </div>
           )}
         </div>
