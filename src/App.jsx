@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { UserPlus, PlusCircle, ShoppingCart, User, Share2, RefreshCw, DollarSign, Edit3, Check, X, Users, Trash2, Package } from 'lucide-react';
+import { UserPlus, PlusCircle, ShoppingCart, User, Share2, RefreshCw, DollarSign, Edit3, Check, X, Users, Trash2, Package, Search } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000/api';
 const api = {
@@ -34,6 +34,9 @@ function App() {
   const [editandoProductoId, setEditandoProductoId] = useState(null);
   const [nuevoPrecioInput, setNuevoPrecioInput] = useState('');
 
+  // ESTADO PARA EL FILTRO DE BÚSQUEDA DE CLIENTES
+  const [busquedaCliente, setBusquedaCliente] = useState('');
+
   const [loading, setLoading] = useState(false);
   const [errorLog, setErrorLog] = useState(null);
 
@@ -63,6 +66,7 @@ function App() {
   const seleccionarYVerCliente = async (cliente) => {
     setClienteSeleccionado(cliente);
     setConsumosCliente([]); 
+    setBusquedaCliente(''); // Limpia el buscador al seleccionar uno para dejarlo listo
     try {
       const consumos = await api.getConsumosCliente(cliente.id);
       setConsumosCliente(consumos);
@@ -170,64 +174,85 @@ function App() {
     } catch (err) { alert("Error al procesar el abono"); }
   };
 
-  // NUEVA FUNCIÓN AUTOMATIZADA CON DETALLE PRODUCTO POR PRODUCTO
+  const liquidarDeudaTotal = async (cliente) => {
+    if (!window.confirm(`¿Confirmas que "${cliente.nombre}" ha pagado la totalidad de su saldo ($${parseFloat(cliente.deuda_usd).toFixed(2)}) y quieres cerrar su cuenta pendiente?`)) return;
+    try {
+      await api.registrarPago({
+        cliente_id: cliente.id,
+        monto: parseFloat(cliente.deuda_usd),
+        moneda: 'USD',
+        tasa: tasa.tasa
+      });
+
+      setClienteSeleccionado(null);
+      setConsumosCliente([]);
+      const dataClientes = await api.getClientes();
+      setClientes(dataClientes);
+      alert("¡Cuenta saldada y archivada con éxito!");
+    } catch (err) {
+      alert("Error al liquidar la deuda del cliente.");
+    }
+  };
+
   const enviarWhatsApp = (c) => {
     if (!c.telefono) {
       alert("Este cliente no tiene un número de teléfono registrado.");
       return;
     }
 
-    // Encabezado del mensaje
     let mensaje = `*🛍️ DETALLE DE TU CUENTA PENDIENTE*\n\n`;
-    mensaje += `Hola *${c.nombre}*, espero que estés bien. Aquí tienes el resumen detallado de los productos que se fiaron en la cuenta:\n\n`;
+    mensaje += `Hola *${c.nombre}*, espero que estés bien. Aquí tienes el desglose de tus consumos y abonos realizados:\n\n`;
 
-    let totalCalculadoUSD = 0;
+    let sumaProductosUSD = 0;
 
-    // Recorremos los consumos cargados en el estado para armar la lista
     if (consumosCliente && consumosCliente.length > 0) {
+      mensaje += `*📦 Productos Fiados:*\n`;
       consumosCliente.forEach((item) => {
         const cant = parseInt(item.cantidad) || 1;
         const precioUSD = parseFloat(item.precio_unitario_usd) || 0;
-        const subtotalUSD = precioUSD * cant;
-        totalCalculadoUSD += subtotalUSD;
+        const subtotalItemUSD = precioUSD * cant;
+        sumaProductosUSD += subtotalItemUSD;
 
-        // Conversión a Bolívares usando la tasa del estado
-        const precioBS = precioUSD * tasa.tasa;
-        const subtotalBS = subtotalUSD * tasa.tasa;
-
-        mensaje += `• *${item.producto}*\n`;
-        mensaje += `  Cantidad: ${cant} x $${precioUSD.toFixed(2)} (_Ref: ${precioBS.toFixed(2)} Bs._)\n`;
-        mensaje += `  *Subtotal: ${subtotalBS.toFixed(2)} Bs.*\n\n`;
+        const subtotalItemBS = subtotalItemUSD * tasa.tasa;
+        mensaje += `• ${item.producto} (${cant}x) -> $${subtotalItemUSD.toFixed(2)} (_${subtotalItemBS.toFixed(2)} Bs._)\n`;
       });
-    } else {
-      // Respaldo en caso de que los consumos no hayan terminado de cargar en el estado
-      const deudaGeneralUSD = parseFloat(c.deuda_usd || 0);
-      const deudaGeneralBS = deudaGeneralUSD * tasa.tasa;
-      mensaje += `• *Saldo Pendiente Acumulado*\n`;
-      mensaje += `  *Subtotal: ${deudaGeneralBS.toFixed(2)} Bs.*\n\n`;
-      totalCalculadoUSD = deudaGeneralUSD;
+      mensaje += `\n`;
     }
 
-    // Calculamos el gran total en Bolívares
-    const totalGeneralBS = totalCalculadoUSD * tasa.tasa;
+    const deudaActualRealUSD = parseFloat(c.deuda_usd || 0);
+    let abonoEfectuadoUSD = sumaProductosUSD - deudaActualRealUSD;
+    if (abonoEfectuadoUSD < 0) abonoEfectuadoUSD = 0;
 
-    // Bloque de cierre y totales financieros
+    if (abonoEfectuadoUSD > 0.01) {
+      const abonoEfectuadoBS = abonoEfectuadoUSD * tasa.tasa;
+      mensaje += `*📉 Abonos y Pagos Registrados:*\n`;
+      mensaje += `• Abono acumulado: -$${abonoEfectuadoUSD.toFixed(2)} (_${abonoEfectuadoBS.toFixed(2)} Bs._)\n\n`;
+    }
+
+    const totalGeneralBS = deudaActualRealUSD * tasa.tasa;
+
     mensaje += `──────────────────────\n`;
-    mensaje += `💵 *TOTAL ACUMULADO A PAGAR:*\n`;
-    mensaje += `• *Total en Dólares:* $${totalCalculadoUSD.toFixed(2)}\n`;
-    mensaje += `• *Total en Bolívares:* ${totalGeneralBS.toFixed(2)} Bs.\n`;
+    mensaje += `💵 *MONTO NETO RESTANTE A PAGAR:*\n`;
+    mensaje += `• *Saldo en Dólares:* $${deudaActualRealUSD.toFixed(2)}\n`;
+    mensaje += `• *Saldo en Bolívares:* ${totalGeneralBS.toFixed(2)} Bs.\n`;
     mensaje += `──────────────────────\n\n`;
     mensaje += `*Tasa de cambio aplicada:* ${tasa.tasa.toFixed(2)} Bs./$ *(BCV)*\n\n`;
-    mensaje += `📌 _Si realizas el pago por Pago Móvil o Transferencia, por favor recuerda validar la tasa del día actual. ¡Muchas gracias!_ 😊`;
+    mensaje += `📌 _Si realizas el pago por Pago Móvil, por favor validar la tasa oficial del día. ¡Muchas gracias!_ 😊`;
 
-    // Limpieza básica del número de teléfono
     const numeroLimpio = c.telefono.replace(/[^0-9]/g, '');
-    
-    // Lanzamiento a la API web de WhatsApp
     window.open(`https://api.whatsapp.com/send?phone=${numeroLimpio}&text=${encodeURIComponent(mensaje)}`, '_blank');
   };
 
   const deudoresActivos = clientes.filter(c => parseFloat(c.deuda_usd) > 0);
+
+  // LÓGICA FILTRADORA DE CLIENTES EN TIEMPO REAL
+  const clientesFiltrados = clientes.filter(c => {
+    const termino = busquedaCliente.toLowerCase();
+    return (
+      c.nombre.toLowerCase().includes(termino) || 
+      (c.telefono && c.telefono.includes(termino))
+    );
+  });
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 font-sans selection:bg-emerald-500 selection:text-slate-900">
@@ -302,48 +327,43 @@ function App() {
           </section>
         </div>
 
-        {/* COLUMNA 2: DEUDORES ACTIVOS */}
-        <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700/70 shadow-lg flex flex-col h-[560px]">
-          <h2 className="text-lg font-bold text-purple-400 flex items-center gap-2 mb-4"><User className="w-5 h-5" /> Clientes con Cuenta Activa</h2>
-          <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-            {deudoresActivos.length === 0 ? (
-              <div className="text-center mt-12 text-slate-500 text-xs">
-                <p className="font-bold">🎉 ¡No hay deudas pendientes!</p>
-                <p className="mt-1">Todos están al día. Usa la caja interactiva para abrir una cuenta nueva.</p>
-              </div>
-            ) : (
-              deudoresActivos.map(c => {
-                const totalBs = (parseFloat(c.deuda_usd || 0) * tasa.tasa).toFixed(2);
-                const esSeleccionado = clienteSeleccionado?.id === c.id;
-                return (
-                  <div key={c.id} onClick={() => seleccionarYVerCliente(c)} className={`p-4 rounded-xl border cursor-pointer transition-all flex justify-between items-center ${esSeleccionado ? 'bg-purple-600/20 border-purple-500' : 'bg-slate-900/50 border-slate-700/60 hover:bg-slate-900'}`}>
-                    <div>
-                      <h3 className="font-bold text-sm text-slate-200">{c.nombre}</h3>
-                      {c.telefono && <p className="text-xs text-slate-500">{c.telefono}</p>}
-                    </div>
-                    <div className="text-right">
-                      <p className="text-sm font-black text-rose-400">${parseFloat(c.deuda_usd || 0).toFixed(2)}</p>
-                      <p className="text-xs text-slate-400">{totalBs} Bs.</p>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-
-        {/* COLUMNA 3: CAJA DE FACTURACIÓN Y ARTÍCULOS DEBIÉNDOSE */}
+          {/* COLUMNA 3: CAJA DE FACTURACIÓN CON FILTRO INTEGRADO */}
         <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700/70 shadow-lg flex flex-col h-[560px]">
           
-          <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700/60 mb-3 flex flex-col gap-1.5">
-            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1"><Users className="w-3 h-3 text-purple-400" /> Abrir Cuenta de Cliente:</span>
-            <select onChange={e => {
-              const encontrado = clientes.find(c => c.id === parseInt(e.target.value));
-              if (encontrado) seleccionarYVerCliente(encontrado);
-            }} value={clienteSeleccionado?.id || ""} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-purple-500">
-              <option value="">-- Seleccionar de la Base de Datos --</option>
-              {clientes.map(c => (
-                <option key={c.id} value={c.id}>{c.nombre} (Saldo: ${parseFloat(c.deuda_usd || 0).toFixed(2)})</option>
+          {/* SECCIÓN REEMPLAZADA POR BUSCADOR INTERACTIVO AVANZADO */}
+          <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700/60 mb-3 flex flex-col gap-2">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">
+              <Users className="w-3 h-3 text-purple-400" /> Abrir Cuenta de Cliente:
+            </span>
+            
+            {/* Campo de Texto de Búsqueda */}
+            <div className="relative">
+              <Search className="absolute left-2 top-2 w-3.5 h-3.5 text-slate-500" />
+              <input 
+                type="text" 
+                placeholder="Buscar por nombre o tlf..." 
+                value={busquedaCliente}
+                onChange={e => setBusquedaCliente(e.target.value)}
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-7 pr-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-purple-500 placeholder:text-slate-600"
+              />
+            </div>
+
+            {/* Menú Dinámico que reacciona al filtro */}
+            <select 
+              onChange={e => {
+                const encontrado = clientes.find(c => c.id === parseInt(e.target.value));
+                if (encontrado) seleccionarYVerCliente(encontrado);
+              }} 
+              value={clienteSeleccionado?.id || ""} 
+              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-purple-500"
+            >
+              <option value="">
+                {busquedaCliente ? `-- Resultados (${clientesFiltrados.length}) --` : '-- Seleccionar de la Lista --'}
+              </option>
+              {clientesFiltrados.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.nombre} (Saldo: ${parseFloat(c.deuda_usd || 0).toFixed(2)})
+                </option>
               ))}
             </select>
           </div>
@@ -368,30 +388,27 @@ function App() {
                   </div>
                 </div>
 
-                {/* 📦 SECCIÓN VISUAL ACTUALIZADA: ARTÍCULOS DETALLADOS QUE DEBE ESTE CLIENTE */}
+                {/* PRODUCTOS FIADOS EN LA CUENTA */}
                 <div className="bg-slate-900/90 border border-slate-700/60 p-3 rounded-xl">
                   <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider flex items-center gap-1 mb-2">
-                    <Package className="w-3 h-3" /> Productos fiados en esta cuenta:
+                    <Package className="w-3 h-3" /> Productos fiados en esta account:
                   </span>
                   <div className="max-h-[100px] overflow-y-auto space-y-1.5 pr-1">
                     {consumosCliente.length === 0 ? (
                       <p className="text-[11px] text-slate-500 italic text-center py-2">No hay registro detallado de mercancía fiada.</p>
                     ) : (
-                      consumosCliente.map((item, idx) => {
-                        const precioBS = (parseFloat(item.precio_unitario_usd || 0) * tasa.tasa);
-                        return (
-                          <div key={idx} className="flex justify-between items-center bg-slate-800/60 p-2 rounded-lg border border-slate-700/30 text-[11px]">
-                            <div className="truncate max-w-[140px] text-slate-300">
-                              <span className="font-extrabold text-cyan-400 mr-1">{item.cantidad}x</span>
-                              {item.producto}
-                            </div>
-                            <div className="text-right font-mono text-[10px]">
-                              <span className="text-rose-400 font-bold block">${parseFloat(item.subtotal_usd || 0).toFixed(2)}</span>
-                              <span className="text-slate-400">{(parseFloat(item.subtotal_usd || 0) * tasa.tasa).toFixed(2)} Bs.</span>
-                            </div>
+                      consumosCliente.map((item, idx) => (
+                        <div key={idx} className="flex justify-between items-center bg-slate-800/60 p-2 rounded-lg border border-slate-700/30 text-[11px]">
+                          <div className="truncate max-w-[140px] text-slate-300">
+                            <span className="font-extrabold text-cyan-400 mr-1">{item.cantidad}x</span>
+                            {item.producto}
                           </div>
-                        );
-                      })
+                          <div className="text-right font-mono text-[10px]">
+                            <span className="text-rose-400 font-bold block">${parseFloat(item.subtotal_usd || 0).toFixed(2)}</span>
+                            <span className="text-slate-400">{(parseFloat(item.subtotal_usd || 0) * tasa.tasa).toFixed(2)} Bs.</span>
+                          </div>
+                        </div>
+                      ))
                     )}
                   </div>
                 </div>
@@ -437,6 +454,14 @@ function App() {
                     </p>
                   )}
                 </form>
+
+                {/* BOTÓN EXTRA: SALDAR LA TOTALIDAD DIRECTAMENTE */}
+                <div className="pt-1">
+                  <button type="button" onClick={() => liquidarDeudaTotal(clienteSeleccionado)} className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold py-2 rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-1">
+                    <Check className="w-4 h-4" /> Saldar Deuda por Completo
+                  </button>
+                </div>
+
               </div>
             </div>
           ) : (
@@ -447,6 +472,38 @@ function App() {
             </div>
           )}
         </div>
+
+        {/* COLUMNA 2: DEUDORES ACTIVOS */}
+        <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700/70 shadow-lg flex flex-col h-[560px]">
+          <h2 className="text-lg font-bold text-purple-400 flex items-center gap-2 mb-4"><User className="w-5 h-5" /> Clientes con Cuenta Activa</h2>
+          <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+            {deudoresActivos.length === 0 ? (
+              <div className="text-center mt-12 text-slate-500 text-xs">
+                <p className="font-bold">🎉 ¡No hay deudas pendientes!</p>
+                <p className="mt-1">Todos están al día. Usa la caja interactiva para abrir una cuenta nueva.</p>
+              </div>
+            ) : (
+              deudoresActivos.map(c => {
+                const totalBs = (parseFloat(c.deuda_usd || 0) * tasa.tasa).toFixed(2);
+                const esSeleccionado = clienteSeleccionado?.id === c.id;
+                return (
+                  <div key={c.id} onClick={() => seleccionarYVerCliente(c)} className={`p-4 rounded-xl border cursor-pointer transition-all flex justify-between items-center ${esSeleccionado ? 'bg-purple-600/20 border-purple-500' : 'bg-slate-900/50 border-slate-700/60 hover:bg-slate-900'}`}>
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-200">{c.nombre}</h3>
+                      {c.telefono && <p className="text-xs text-slate-500">{c.telefono}</p>}
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-black text-rose-400">${parseFloat(c.deuda_usd || 0).toFixed(2)}</p>
+                      <p className="text-xs text-slate-400">{totalBs} Bs.</p>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+      
 
       </main>
     </div>
