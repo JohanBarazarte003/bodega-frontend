@@ -14,6 +14,7 @@ const api = {
     registrarConsumo: (o) => axios.post(`${API}/fiar`, o).then(res => res.data),
     getConsumosCliente: (clienteId) => axios.get(`${API}/consumos/${clienteId}`).then(res => res.data),
     registrarPago: (pago) => axios.post(`${API}/pagos`, pago).then(res => res.data),
+    saldarDeudaTotal: (cierre) => axios.post(`${API}/saldar-todo`, cierre).then(res => res.data),
     getTasa: () => axios.get(`${API}/tasa`).then(res => res.data),
 };
 
@@ -33,10 +34,7 @@ function App() {
   
   const [editandoProductoId, setEditandoProductoId] = useState(null);
   const [nuevoPrecioInput, setNuevoPrecioInput] = useState('');
-
-  // ESTADO PARA EL FILTRO DE BÚSQUEDA DE CLIENTES
   const [busquedaCliente, setBusquedaCliente] = useState('');
-
   const [loading, setLoading] = useState(false);
   const [errorLog, setErrorLog] = useState(null);
 
@@ -66,7 +64,7 @@ function App() {
   const seleccionarYVerCliente = async (cliente) => {
     setClienteSeleccionado(cliente);
     setConsumosCliente([]); 
-    setBusquedaCliente(''); // Limpia el buscador al seleccionar uno para dejarlo listo
+    setBusquedaCliente('');
     try {
       const consumos = await api.getConsumosCliente(cliente.id);
       setConsumosCliente(consumos);
@@ -100,12 +98,24 @@ function App() {
   const handleCrearProducto = async (e) => {
     e.preventDefault();
     if (!formProducto.nombre.trim() || !formProducto.precio_usd) return;
+    
     try {
-      await api.crearProducto(formProducto);
+      // Convertimos los Bolívares ingresados a Dólares usando la tasa oficial actual
+      const precioEnBs = parseFloat(formProducto.precio_usd);
+      const precioEnUsd = parseFloat((precioEnBs / tasa.tasa).toFixed(2));
+
+      await api.crearProducto({
+        nombre: formProducto.nombre,
+        categoria: formProducto.categoria,
+        precio_usd: precioEnUsd // Guardamos resguardado en divisa
+      });
+
       setFormProducto({ nombre: '', categoria: 'Snacks', precio_usd: '' });
       cargarDatos();
-      alert("Artículo guardado en el inventario.");
-    } catch (err) { alert("Error al guardar artículo"); }
+      alert("Artículo guardado y convertido a dólares en el inventario.");
+    } catch (err) { 
+      alert("Error al guardar artículo"); 
+    }
   };
 
   const GuardarNuevoPrecio = async (id) => {
@@ -165,7 +175,7 @@ function App() {
       const clienteActualizado = dataClientes.find(c => c.id === clienteSeleccionado.id);
       if (!clienteActualizado || parseFloat(clienteActualizado.deuda_usd) === 0) {
         setClienteSeleccionado(null);
-        setConsumosCliente([]);
+        setConsumosCliente([]); 
         alert("¡Deuda saldada por completo!");
       } else {
         seleccionarYVerCliente(clienteActualizado);
@@ -177,18 +187,16 @@ function App() {
   const liquidarDeudaTotal = async (cliente) => {
     if (!window.confirm(`¿Confirmas que "${cliente.nombre}" ha pagado la totalidad de su saldo ($${parseFloat(cliente.deuda_usd).toFixed(2)}) y quieres cerrar su cuenta pendiente?`)) return;
     try {
-      await api.registrarPago({
+      await api.saldarDeudaTotal({
         cliente_id: cliente.id,
-        monto: parseFloat(cliente.deuda_usd),
-        moneda: 'USD',
         tasa: tasa.tasa
       });
 
       setClienteSeleccionado(null);
-      setConsumosCliente([]);
+      setConsumosCliente([]); 
       const dataClientes = await api.getClientes();
       setClientes(dataClientes);
-      alert("¡Cuenta saldada y archivada con éxito!");
+      alert("¡Cuenta saldada y ciclo archivado con éxito!");
     } catch (err) {
       alert("Error al liquidar la deuda del cliente.");
     }
@@ -244,8 +252,6 @@ function App() {
   };
 
   const deudoresActivos = clientes.filter(c => parseFloat(c.deuda_usd) > 0);
-
-  // LÓGICA FILTRADORA DE CLIENTES EN TIEMPO REAL
   const clientesFiltrados = clientes.filter(c => {
     const termino = busquedaCliente.toLowerCase();
     return (
@@ -278,7 +284,7 @@ function App() {
 
       <main className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
         
-        {/* COLUMNA 1: FORMULARIOS E INVENTARIO */}
+        {/* BLOQUE 1 (IZQUIERDA): ENTRADA DE DATOS E INVENTARIO */}
         <div className="space-y-6">
           <section className="bg-slate-800 p-5 rounded-2xl border border-slate-700/70 shadow-lg">
             <h2 className="text-lg font-bold text-emerald-400 flex items-center gap-2 mb-4"><UserPlus className="w-5 h-5" /> Registrar Cliente</h2>
@@ -289,14 +295,21 @@ function App() {
             </form>
           </section>
 
-          {/* INVENTARIO */}
-          <section className="bg-slate-800 p-5 rounded-2xl border border-slate-700/70 shadow-lg flex flex-col h-[320px]">
+          <section className="bg-slate-800 p-5 rounded-2xl border border-slate-700/70 shadow-lg flex flex-col h-[340px]">
             <h2 className="text-lg font-bold text-cyan-400 flex items-center gap-2 mb-2"><PlusCircle className="w-5 h-5" /> Inventario de Ventas</h2>
             
-            <form onSubmit={handleCrearProducto} className="flex gap-1.5 mb-3 border-b border-slate-700 pb-3">
-              <input type="text" placeholder="Item" value={formProducto.nombre} onChange={e => setFormProducto({...formProducto, nombre: e.target.value})} className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs focus:outline-none text-slate-100" required />
-              <input type="number" step="0.01" placeholder="$" value={formProducto.precio_usd} onChange={e => setFormProducto({...formProducto, precio_usd: e.target.value})} className="w-14 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-center" required />
-              <button type="submit" className="bg-cyan-600 hover:bg-cyan-500 text-white px-2 rounded-lg text-xs font-bold">+</button>
+            <form onSubmit={handleCrearProducto} className="flex flex-col gap-2 mb-3 border-b border-slate-700 pb-3">
+              <div className="flex gap-1.5">
+                <input type="text" placeholder="Item (Ej: Harina PAN)" value={formProducto.nombre} onChange={e => setFormProducto({...formProducto, nombre: e.target.value})} className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs focus:outline-none text-slate-100" required />
+                <input type="number" step="0.01" placeholder="Precio Bs." value={formProducto.precio_usd} onChange={e => setFormProducto({...formProducto, precio_usd: e.target.value})} className="w-20 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-center text-cyan-300 font-bold" required />
+                <button type="submit" className="bg-cyan-600 hover:bg-cyan-500 text-white px-3 rounded-lg text-xs font-bold">+</button>
+              </div>
+
+              {formProducto.precio_usd && (
+                <p className="text-[10px] text-slate-400 italic text-right">
+                  Equivale a: <span className="text-emerald-400 font-bold">${(parseFloat(formProducto.precio_usd) / tasa.tasa).toFixed(2)} USD</span>
+                </p>
+              )}
             </form>
 
             <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
@@ -316,7 +329,7 @@ function App() {
                       <button onClick={() => { setEditandoProductoId(p.id); setNuevoPrecioInput(p.precio_usd); }} className="text-slate-500 hover:text-white p-1 hover:bg-slate-800 rounded transition-colors">
                         <Edit3 className="w-3.5 h-3.5" />
                       </button>
-                      <button onClick={() => handleEliminarProducto(p.id, p.nombre)} className="text-slate-500 hover:text-rose-400 p-1 hover:bg-slate-800 rounded transition-colors" title="Eliminar del Inventario">
+                      <button onClick={() => handleEliminarProducto(p.id, p.nombre)} className="text-slate-500 hover:text-rose-400 p-1 hover:bg-slate-800 rounded transition-colors">
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
@@ -327,16 +340,13 @@ function App() {
           </section>
         </div>
 
-          {/* COLUMNA 3: CAJA DE FACTURACIÓN CON FILTRO INTEGRADO */}
+        {/* BLOQUE 2 (CENTRO): OPERACIONES Y FACTURACIÓN (CAJA INTERACTIVA) */}
         <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700/70 shadow-lg flex flex-col h-[560px]">
-          
-          {/* SECCIÓN REEMPLAZADA POR BUSCADOR INTERACTIVO AVANZADO */}
           <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700/60 mb-3 flex flex-col gap-2">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">
               <Users className="w-3 h-3 text-purple-400" /> Abrir Cuenta de Cliente:
             </span>
             
-            {/* Campo de Texto de Búsqueda */}
             <div className="relative">
               <Search className="absolute left-2 top-2 w-3.5 h-3.5 text-slate-500" />
               <input 
@@ -348,7 +358,6 @@ function App() {
               />
             </div>
 
-            {/* Menú Dinámico que reacciona al filtro */}
             <select 
               onChange={e => {
                 const encontrado = clientes.find(c => c.id === parseInt(e.target.value));
@@ -382,16 +391,15 @@ function App() {
                         <Share2 className="w-3 h-3" /> Cobrar
                       </button>
                     )}
-                    <button onClick={() => handleEliminarCliente(clienteSeleccionado.id, clienteSeleccionado.nombre)} className="p-1.5 bg-rose-950/40 text-rose-400 rounded-lg border border-rose-900/40 hover:bg-rose-600 hover:text-white transition-all" title="Eliminar Cliente del Sistema">
+                    <button onClick={() => handleEliminarCliente(clienteSeleccionado.id, clienteSeleccionado.nombre)} className="p-1.5 bg-rose-950/40 text-rose-400 rounded-lg border border-rose-900/40 hover:bg-rose-600 hover:text-white transition-all">
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
 
-                {/* PRODUCTOS FIADOS EN LA CUENTA */}
                 <div className="bg-slate-900/90 border border-slate-700/60 p-3 rounded-xl">
                   <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider flex items-center gap-1 mb-2">
-                    <Package className="w-3 h-3" /> Productos fiados en esta account:
+                    <Package className="w-3 h-3" /> Productos fiados en este ciclo:
                   </span>
                   <div className="max-h-[100px] overflow-y-auto space-y-1.5 pr-1">
                     {consumosCliente.length === 0 ? (
@@ -413,7 +421,6 @@ function App() {
                   </div>
                 </div>
 
-                {/* FIAR UN PRODUCTO */}
                 <form onSubmit={handleRegistrarConsumo} className="bg-slate-900/60 p-3 rounded-xl border border-slate-700/50 space-y-2">
                   <span className="text-xs font-bold text-slate-400 block"><ShoppingCart className="w-3.5 h-3.5 inline mr-1 text-cyan-400" /> Fiar Artículo</span>
                   <select value={formFiar.producto_id} onChange={e => setFormFiar({...formFiar, producto_id: e.target.value})} className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500">
@@ -423,12 +430,11 @@ function App() {
                     ))}
                   </select>
                   <div className="flex gap-2">
-                    <input type="number" min="1" value={formFiar.cantidad} onChange={e => setFormFiar({...formFiar, cantidad: e.target.value})} className="w-14 bg-slate-900 border border-slate-700 rounded-lg text-center text-xs py-1" />
+                    <input type="number" min="1" value={formFiar.cantidad} onChange={e => setFormFiar({...formFiar, Flyweight: e.target.value, cantidad: e.target.value})} className="w-14 bg-slate-900 border border-slate-700 rounded-lg text-center text-xs py-1" />
                     <button type="submit" className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-1 rounded-lg text-xs transition-all">Cargar a la Cuenta</button>
                   </div>
                 </form>
 
-                {/* PROCESAR ABONO MULTIMONEDA */}
                 <form onSubmit={ejecutarAbonoBimonetario} className="bg-emerald-950/20 p-3 rounded-xl border border-emerald-500/20 space-y-2.5">
                   <div className="flex justify-between items-center">
                     <span className="text-xs font-bold text-emerald-400 flex items-center gap-1"><DollarSign className="w-3.5 h-3.5" /> Registrar Abono</span>
@@ -455,13 +461,11 @@ function App() {
                   )}
                 </form>
 
-                {/* BOTÓN EXTRA: SALDAR LA TOTALIDAD DIRECTAMENTE */}
                 <div className="pt-1">
                   <button type="button" onClick={() => liquidarDeudaTotal(clienteSeleccionado)} className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold py-2 rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-1">
                     <Check className="w-4 h-4" /> Saldar Deuda por Completo
                   </button>
                 </div>
-
               </div>
             </div>
           ) : (
@@ -473,7 +477,7 @@ function App() {
           )}
         </div>
 
-        {/* COLUMNA 2: DEUDORES ACTIVOS */}
+        {/* BLOQUE 3 (DERECHA): MONITOR DE CUENTAS ACTIVAS / DEUDORES */}
         <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700/70 shadow-lg flex flex-col h-[560px]">
           <h2 className="text-lg font-bold text-purple-400 flex items-center gap-2 mb-4"><User className="w-5 h-5" /> Clientes con Cuenta Activa</h2>
           <div className="flex-1 overflow-y-auto space-y-2 pr-1">
@@ -502,8 +506,6 @@ function App() {
             )}
           </div>
         </div>
-
-      
 
       </main>
     </div>
